@@ -66,14 +66,14 @@ async function getTTSWebSocketUrl(): Promise<string> {
 }
 
 // 构造 TTS 请求的 JSON 数据
-function buildTTSRequestPayload(text: string) {
+function buildTTSRequestPayload(text: string, config: any) {
   const cleanedText = cleanTextForTTS(text);
   const textBase64 = btoa(unescape(encodeURIComponent(cleanedText)));
   return {
     header: {
-      app_id: TTS_APPID,
+      app_id: config.appId,
       status: 2,
-      res_id: TTS_res_id
+      res_id: config.resId
     },
     parameter: {
       tts: {
@@ -153,27 +153,18 @@ const HomePage: React.FC = () => {
 
   async function fetchSessions() {
     try {
-      if (!API_BASE || !CHAT_ID || !API_KEY) {
-        console.error('API configuration is missing');
-        return;
-      }
-
-      const url = `${API_BASE}/api/v1/chats/${CHAT_ID}/sessions?page=1&page_size=30`;
-      
-      const res = await fetch(url, {
+      const res = await fetch(`${API_BASE}/sessions`, {
         method: 'GET',
-        headers: { 'Authorization': `Bearer ${API_KEY}` }
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
-
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
 
       const result = await res.json();
       if (result.code === 0) {
         setSessions(result.data || []);
       } else {
-        console.error('fetchSessions failed:', result);
+        console.error('fetchSessions failed:', result.message);
       }
     } catch (e) {
       console.error('fetchSessions error:', e);
@@ -182,11 +173,10 @@ const HomePage: React.FC = () => {
 
   async function createSession(firstUserQuestion: string) {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/chats/${CHAT_ID}/sessions`, {
+      const res = await fetch(`${API_BASE}/sessions`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${API_KEY}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ name: '新对话' })
       });
@@ -241,11 +231,10 @@ const HomePage: React.FC = () => {
 
   async function deleteSession(sessionId: string) {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/chats/${CHAT_ID}/sessions`, {
+      const res = await fetch(`${API_BASE}/sessions`, {
         method: 'DELETE',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${API_KEY}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ ids: [sessionId] })
       });
@@ -266,13 +255,12 @@ const HomePage: React.FC = () => {
 
   async function updateSessionName(sessionId: string, newName: string) {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/chats/${CHAT_ID}/sessions/${sessionId}`, {
+      const res = await fetch(`${API_BASE}/sessions`, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${API_KEY}`
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ name: newName })
+        body: JSON.stringify({ id: sessionId, name: newName })
       });
       const json = await res.json();
       if (json.code !== 0) {
@@ -312,11 +300,10 @@ const HomePage: React.FC = () => {
     setMessages(prev => [...prev, tempAI]);
 
     try {
-      const response = await fetch(`${API_BASE}/api/v1/chats/${CHAT_ID}/completions`, {
+      const response = await fetch(`${API_BASE}/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${API_KEY}`,
           'Accept': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive'
@@ -580,13 +567,24 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
     }
     setLoading(true);
     try {
-      const wsUrl = await getTTSWebSocketUrl();
-      const ttsReq = buildTTSRequestPayload(text);
-      const ws = new WebSocket(wsUrl);
+      // 从后端获取TTS配置
+      const configResponse = await fetch(`${API_BASE}/tts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text })
+      });
+      
+      const config = await configResponse.json();
+      const ws = new WebSocket(config.wsUrl);
       let audioData: Uint8Array[] = [];
+      
       ws.onopen = () => {
+        const ttsReq = buildTTSRequestPayload(text, config);
         ws.send(JSON.stringify(ttsReq));
       };
+      
       ws.onmessage = (evt) => {
         if (typeof evt.data === 'string') {
           processTTSMessage(evt.data, ws, audioData);
@@ -596,14 +594,14 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
             processTTSMessage(reader.result as string, ws, audioData);
           };
           reader.readAsText(evt.data);
-        } else {
-          console.error('Unexpected message data type:', evt.data);
         }
       };
+      
       ws.onerror = (e) => {
         console.error('TTS WebSocket error:', e);
         setLoading(false);
       };
+      
       ws.onclose = () => {
         setLoading(false);
       };
