@@ -576,38 +576,80 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
         body: JSON.stringify({ text })
       });
       
+      if (!configResponse.ok) {
+        throw new Error(`Failed to get TTS config: ${configResponse.statusText}`);
+      }
+      
       const config = await configResponse.json();
-      const ws = new WebSocket(config.wsUrl);
-      let audioData: Uint8Array[] = [];
-      
-      ws.onopen = () => {
-        const ttsReq = buildTTSRequestPayload(text, config);
-        ws.send(JSON.stringify(ttsReq));
-      };
-      
-      ws.onmessage = (evt) => {
-        if (typeof evt.data === 'string') {
-          processTTSMessage(evt.data, ws, audioData);
-        } else if (evt.data instanceof Blob) {
-          const reader = new FileReader();
-          reader.onload = () => {
-            processTTSMessage(reader.result as string, ws, audioData);
+      if (!config.wsUrl || !config.appId || !config.resId) {
+        throw new Error('Invalid TTS configuration received');
+      }
+
+      let retryCount = 0;
+      const maxRetries = 3;
+      const connectWebSocket = () => {
+        return new Promise((resolve, reject) => {
+          const ws = new WebSocket(config.wsUrl);
+          let audioData: Uint8Array[] = [];
+          let connectionTimeout: NodeJS.Timeout;
+
+          // 设置连接超时
+          connectionTimeout = setTimeout(() => {
+            ws.close();
+            if (retryCount < maxRetries) {
+              retryCount++;
+              console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
+              resolve(connectWebSocket());
+            } else {
+              reject(new Error('WebSocket connection timeout after retries'));
+            }
+          }, 5000);
+          
+          ws.onopen = () => {
+            clearTimeout(connectionTimeout);
+            console.log('WebSocket connected successfully');
+            const ttsReq = buildTTSRequestPayload(text, config);
+            ws.send(JSON.stringify(ttsReq));
           };
-          reader.readAsText(evt.data);
-        }
+          
+          ws.onmessage = (evt) => {
+            if (typeof evt.data === 'string') {
+              processTTSMessage(evt.data, ws, audioData);
+            } else if (evt.data instanceof Blob) {
+              const reader = new FileReader();
+              reader.onload = () => {
+                processTTSMessage(reader.result as string, ws, audioData);
+              };
+              reader.readAsText(evt.data);
+            }
+          };
+          
+          ws.onerror = (e) => {
+            console.error('TTS WebSocket error:', e);
+            clearTimeout(connectionTimeout);
+            if (retryCount < maxRetries) {
+              retryCount++;
+              console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
+              ws.close();
+              resolve(connectWebSocket());
+            } else {
+              reject(new Error('WebSocket connection failed after retries'));
+            }
+          };
+          
+          ws.onclose = () => {
+            clearTimeout(connectionTimeout);
+            setLoading(false);
+          };
+        });
       };
-      
-      ws.onerror = (e) => {
-        console.error('TTS WebSocket error:', e);
-        setLoading(false);
-      };
-      
-      ws.onclose = () => {
-        setLoading(false);
-      };
+
+      await connectWebSocket();
     } catch (err) {
       console.error('TTS request error:', err);
       setLoading(false);
+      // 显示错误提示
+      alert(`语音合成失败: ${err.message}`);
     }
   };
 
