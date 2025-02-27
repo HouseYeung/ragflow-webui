@@ -2,42 +2,52 @@ import { NextRequest } from 'next/server';
 
 export const runtime = 'edge';
 
-export async function GET(req: NextRequest) {
-  try {
-    // 获取查询参数
-    const { searchParams } = new URL(req.url);
-    const page = searchParams.get('page') || '1';
-    const pageSize = searchParams.get('page_size') || '30';
-    const userId = searchParams.get('user_id');
+// 构建完整的 API URL
+function buildApiUrl(tunnelUrl: string, path: string, searchParams?: URLSearchParams) {
+  const url = new URL(`${tunnelUrl}/api/v1/chats/${process.env.API_CHAT_ID}${path}`);
+  if (searchParams) {
+    searchParams.forEach((value, key) => {
+      url.searchParams.append(key, value);
+    });
+  }
+  return url.toString();
+}
 
-    // 获取隧道域名
+// 通用的请求处理函数
+async function handleRequest(req: NextRequest, method: string) {
+  try {
     const tunnelUrl = process.env.TUNNEL_ENDPOINT;
     if (!tunnelUrl) {
       throw new Error('TUNNEL_ENDPOINT not set');
     }
 
-    // 构建完整的 URL
-    const url = new URL(`${tunnelUrl}/api/v1/chats/${process.env.API_CHAT_ID}/sessions`);
-    url.searchParams.set('page', page);
-    url.searchParams.set('page_size', pageSize);
-    if (userId) {
-      url.searchParams.set('user_id', userId);
+    let url: string;
+    let body: string | null = null;
+    
+    if (method === 'GET') {
+      const { searchParams } = new URL(req.url);
+      url = buildApiUrl(tunnelUrl, '/sessions', searchParams);
+    } else {
+      url = buildApiUrl(tunnelUrl, '/sessions');
+      if (method !== 'GET') {
+        body = await req.text();
+      }
     }
 
-    // 发送请求
-    const response = await fetch(url.toString(), {
+    const response = await fetch(url, {
+      method,
       headers: {
+        'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.API_KEY || ''}`,
       },
+      ...(body ? { body } : {}),
     });
 
-    // 如果响应不成功，抛出错误
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ message: 'Unknown error' }));
       throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
     }
 
-    // 返回响应
     const data = await response.json();
     return new Response(JSON.stringify(data), {
       headers: {
@@ -46,7 +56,7 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (err: any) {
-    console.error('[Edge Function Error]:', err);
+    console.error(`[Edge Function Error - ${method}]:`, err);
     return new Response(
       JSON.stringify({ 
         error: err.message || 'Internal Server Error',
@@ -60,4 +70,20 @@ export async function GET(req: NextRequest) {
       }
     );
   }
+}
+
+export async function GET(req: NextRequest) {
+  return handleRequest(req, 'GET');
+}
+
+export async function POST(req: NextRequest) {
+  return handleRequest(req, 'POST');
+}
+
+export async function PUT(req: NextRequest) {
+  return handleRequest(req, 'PUT');
+}
+
+export async function DELETE(req: NextRequest) {
+  return handleRequest(req, 'DELETE');
 } 
