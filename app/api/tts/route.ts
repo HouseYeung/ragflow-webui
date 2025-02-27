@@ -1,7 +1,44 @@
 import { NextRequest } from 'next/server';
-import crypto from 'crypto';
 
 export const runtime = 'edge';
+
+// 将字符串转换为 Uint8Array
+function stringToUint8Array(str: string) {
+  return new TextEncoder().encode(str);
+}
+
+// 将 ArrayBuffer 转换为 Base64 字符串
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// 使用 Web Crypto API 生成 HMAC-SHA256 签名
+async function generateHmacSha256(message: string, key: string) {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(key);
+  const messageData = encoder.encode(message);
+
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    cryptoKey,
+    messageData
+  );
+
+  return arrayBufferToBase64(signature);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,14 +51,11 @@ export async function POST(req: NextRequest) {
     const requestLine = `GET ${path} HTTP/1.1`;
     const tmp = `host: ${host}\ndate: ${date}\n${requestLine}`;
 
-    // 使用 HMAC-SHA256 生成签名
-    const signature = crypto
-      .createHmac('sha256', process.env.TTS_API_SECRET || '')
-      .update(tmp)
-      .digest('base64');
+    // 使用 Web Crypto API 生成签名
+    const signature = await generateHmacSha256(tmp, process.env.TTS_API_SECRET || '');
 
     const authOrigin = `api_key="${process.env.TTS_API_KEY}", algorithm="hmac-sha256", headers="host date request-line", signature="${signature}"`;
-    const authorization = Buffer.from(authOrigin).toString('base64');
+    const authorization = btoa(authOrigin);
 
     // 构建 WebSocket URL
     const wsUrl = `wss://${host}${path}?authorization=${encodeURIComponent(authorization)}&date=${encodeURIComponent(date)}&host=${encodeURIComponent(host)}`;
