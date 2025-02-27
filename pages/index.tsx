@@ -11,6 +11,7 @@ import {
   PlayIcon,
   PauseIcon,
   CheckIcon,
+  SpeakerWaveIcon,
 } from '@heroicons/react/24/outline';
 import FullAnswerDisplay from '../components/FullAnswerDisplay';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -164,6 +165,19 @@ const isClient = typeof window !== 'undefined';
 
 // ====================== 主页面组件 ======================
 
+// 添加本地存储相关的函数
+function saveSessionsToLocal(sessions: ChatSession[]) {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('chat_sessions', JSON.stringify(sessions));
+  }
+}
+
+function getSessionsFromLocal(): ChatSession[] {
+  if (typeof window === 'undefined') return [];
+  const stored = localStorage.getItem('chat_sessions');
+  return stored ? JSON.parse(stored) : [];
+}
+
 const HomePage: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
@@ -171,6 +185,45 @@ const HomePage: React.FC = () => {
   const [inputValue, setInputValue] = useState<string>('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [userId] = useState<string>(() => getUserId());
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  // 初始化时从本地和服务器加载会话列表
+  useEffect(() => {
+    const localSessions = getSessionsFromLocal();
+    setSessions(localSessions);
+    
+    // 同时从服务器获取会话列表
+    if (userId) {
+      fetch(`${API_BASE}/sessions?user_id=${userId}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+      .then(res => res.json())
+      .then(result => {
+        if (result.code === 0 && result.data) {
+          // 合并本地和服务器的会话列表，以本地为主
+          const serverSessions = result.data;
+          const mergedSessions = localSessions.map(localSession => {
+            const serverSession = serverSessions.find(s => s.id === localSession.id);
+            return serverSession ? { ...serverSession, ...localSession } : localSession;
+          });
+          
+          // 添加本地没有的服务器会话
+          serverSessions.forEach(serverSession => {
+            if (!mergedSessions.find(s => s.id === serverSession.id)) {
+              mergedSessions.push(serverSession);
+            }
+          });
+          
+          setSessions(mergedSessions);
+          saveSessionsToLocal(mergedSessions);
+        }
+      })
+      .catch(e => console.error('从服务器获取会话列表失败:', e));
+    }
+  }, [userId]);
 
   // 保存选中的会话ID到localStorage
   useEffect(() => {
@@ -178,13 +231,6 @@ const HomePage: React.FC = () => {
       localStorage.setItem('lastSelectedSessionId', selectedSessionId);
     }
   }, [selectedSessionId]);
-
-  // 初始化时加载会话列表
-  useEffect(() => {
-    if (userId) {
-      fetchSessions();
-    }
-  }, [userId]);
 
   // 当会话列表加载完成后，尝试恢复上次选中的会话
   useEffect(() => {
@@ -213,71 +259,85 @@ const HomePage: React.FC = () => {
     }
   }, [sessions, selectedSessionId]);
 
-  async function fetchSessions() {
-    try {
-      const res = await fetch(`${API_BASE}/sessions?user_id=${userId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-
-      const result = await res.json();
-      if (result.code === 0) {
-        setSessions(result.data || []);
-      } else {
-        console.error('fetchSessions failed:', result.message);
-      }
-    } catch (e) {
-      console.error('fetchSessions error:', e);
-    }
-  }
-
   async function createSession(firstUserQuestion: string) {
     try {
-      const res = await fetch(`${API_BASE}/sessions`, {
+      // 准备新会话的名称
+      const sessionName = firstUserQuestion 
+        ? firstUserQuestion.slice(0, 20) + (firstUserQuestion.length > 20 ? '...' : '') 
+        : '新对话';
+
+      // 先请求后端创建会话，获取真实的 session ID
+      const response = await fetch(`${API_BASE}/sessions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          name: firstUserQuestion ? firstUserQuestion.slice(0, 20) + (firstUserQuestion.length > 20 ? '...' : '') : '新对话',
+          name: sessionName,
           user_id: userId
         })
       });
-      const json = await res.json();
-      if (json.code === 0) {
-        const sessionId = json.data.id;
-        
-        // 设置会话ID并清空消息
-        setSelectedSessionId(sessionId);
-        
-        // 如果是第一次创建会话，不需要再显示欢迎消息
-        if (firstUserQuestion.trim()) {
-          setMessages([]); // 清空之前的欢迎消息
-        } else {
-          // 如果是点击"新建对话"按钮创建的，显示欢迎消息
-          const welcomeMsg: LocalMessage = {
-            id: `assistant-welcome-${Date.now()}`,
-            role: 'assistant',
-            content: '你好！我是陈主任，有什么可以帮到你的吗？',
-            noTTS: true,
-          };
-          setMessages([welcomeMsg]);
-        }
-        
-        // 立即刷新会话列表
-        await fetchSessions();
-
-        // 如果有初始问题，就发送
-        if (firstUserQuestion.trim()) {
-          await sendMessage(firstUserQuestion, sessionId);
-        }
-      } else {
-        console.error('createSession failed:', json);
+      
+      if (!response.ok) {
+        throw new Error('创建会话失败');
       }
+      
+      const result = await response.json();
+      if (result.code !== 0 || !result.data?.id) {
+        throw new Error(result.message || '创建会话失败');
+      }
+
+      // 使用后端返回的 session ID
+      const sessionId = result.data.id;
+      
+      // 创建本地会话对象
+      const newSession: ChatSession = {
+        id: sessionId,
+        name: sessionName,
+        create_time: Date.now(),
+        update_time: Date.now(),
+        messages: []
+      };
+
+      // 更新本地状态
+      setSessions(prev => {
+        const newSessions = [newSession, ...prev];
+        saveSessionsToLocal(newSessions);
+        return newSessions;
+      });
+      
+      // 设置会话ID并清空消息
+      setSelectedSessionId(sessionId);
+      
+      // 如果是第一次创建会话，不需要再显示欢迎消息
+      if (firstUserQuestion.trim()) {
+        setMessages([]); // 清空之前的欢迎消息
+      } else {
+        // 如果是点击"新建对话"按钮创建的，显示欢迎消息
+        const welcomeMsg: LocalMessage = {
+          id: `assistant-welcome-${Date.now()}`,
+          role: 'assistant',
+          content: '你好！我是陈主任，有什么可以帮到你的吗？',
+          noTTS: true,
+        };
+        setMessages([welcomeMsg]);
+        localStorage.setItem(`messages_${sessionId}`, JSON.stringify([welcomeMsg]));
+      }
+
+      // 关闭侧边栏
+      setIsSidebarOpen(false);
+
+      // 如果有初始问题，就发送
+      if (firstUserQuestion.trim()) {
+        await sendMessage(firstUserQuestion, sessionId);
+      }
+
+      return sessionId; // 返回后端创建的会话ID
+
     } catch (error) {
       console.error('创建会话失败:', error);
+      alert('创建会话失败，请重试');
+      throw error;
     }
   }
 
@@ -302,26 +362,20 @@ const HomePage: React.FC = () => {
 
   async function deleteSession(sessionId: string) {
     try {
-      const res = await fetch(`${API_BASE}/sessions`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-          ids: [sessionId],
-          user_id: userId
-        })
+      // 只从本地删除
+      setSessions(prev => {
+        const newSessions = prev.filter(s => s.id !== sessionId);
+        saveSessionsToLocal(newSessions);
+        return newSessions;
       });
-      const json = await res.json();
-      if (json.code === 0) {
-        await fetchSessions();
-        if (sessionId === selectedSessionId) {
-          setSelectedSessionId('');
-          setMessages([]);
-        }
-      } else {
-        console.error('deleteSession failed:', json);
+      
+      if (sessionId === selectedSessionId) {
+        setSelectedSessionId('');
+        setMessages([]);
       }
+      
+      // 删除本地消息记录
+      localStorage.removeItem(`messages_${sessionId}`);
     } catch (err) {
       console.error('deleteSession error:', err);
     }
@@ -329,7 +383,19 @@ const HomePage: React.FC = () => {
 
   async function updateSessionName(sessionId: string, newName: string) {
     try {
-      const res = await fetch(`${API_BASE}/sessions`, {
+      // 更新本地存储和状态
+      setSessions(prev => {
+        const newSessions = prev.map(s => 
+          s.id === sessionId 
+            ? { ...s, name: newName, update_time: Date.now() }
+            : s
+        );
+        saveSessionsToLocal(newSessions);
+        return newSessions;
+      });
+
+      // 同时更新服务器
+      fetch(`${API_BASE}/sessions`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
@@ -339,156 +405,180 @@ const HomePage: React.FC = () => {
           name: newName,
           user_id: userId
         })
-      });
-      const json = await res.json();
-      if (json.code !== 0) {
-        console.error('updateSessionName failed:', json);
-      }
+      }).catch(e => console.error('更新会话名称到服务器失败:', e));
     } catch (err) {
       console.error('updateSessionName error:', err);
     }
   }
 
   async function sendMessage(question: string, sessionId?: string) {
-    const activeSessionId = sessionId || selectedSessionId;
-    if (!activeSessionId) {
-      await createSession(question);
-      return;
-    }
-    if (!question.trim()) {
-      alert('问题不能为空');
-      return;
-    }
-
-    // 如果是新对话，还叫"新对话"，则用用户输入更新一下标题
-    const currentSession = sessions.find(s => s.id === activeSessionId);
-    if (currentSession && currentSession.name === '新对话') {
-      const newName = question.trim().slice(0, 20) + (question.trim().length > 20 ? '...' : '');
-      await updateSessionName(activeSessionId, newName);
-      setSessions(prev =>
-        prev.map(s => (s.id === activeSessionId ? { ...s, name: newName } : s))
-      );
-    }
-
-    // 先把用户消息塞进本地
-    const userMsg: LocalMessage = { id: `user-${Date.now()}`, role: 'user', content: question };
-    setMessages(prev => [...prev, userMsg]);
-    setInputValue('');
-
-    // 再放一个空的 AI 消息，用于流式更新
-    const tempAI: LocalMessage = { id: `assistant-${Date.now() + 1}`, role: 'assistant', content: '', streaming: true };
-    setMessages(prev => [...prev, tempAI]);
-
+    let activeSessionId = sessionId || selectedSessionId;
     try {
-      const response = await fetch(`${API_BASE}/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive'
-        },
-        body: JSON.stringify({ 
-          question, 
-          stream: true, 
-          session_id: activeSessionId,
-          user_id: userId
-        }),
-        cache: 'no-store',
-        credentials: 'same-origin'
+      if (!activeSessionId) {
+        // 如果没有活动会话，先创建一个新会话并等待完成
+        const newSessionId = await createSession(question);
+        if (!newSessionId) {
+          throw new Error('创建会话失败');
+        }
+        return;
+      }
+
+      if (!question.trim()) {
+        alert('问题不能为空');
+        return;
+      }
+
+      // 如果是新对话，还叫"新对话"，则用用户输入更新一下标题
+      const currentSession = sessions.find(s => s.id === activeSessionId);
+      if (currentSession && currentSession.name === '新对话') {
+        const newName = question.trim().slice(0, 20) + (question.trim().length > 20 ? '...' : '');
+        await updateSessionName(activeSessionId, newName);
+      }
+
+      // 更新会话的最后修改时间
+      setSessions(prev => {
+        const newSessions = prev.map(s => 
+          s.id === activeSessionId 
+            ? { ...s, update_time: Date.now() }
+            : s
+        );
+        saveSessionsToLocal(newSessions);
+        return newSessions;
       });
 
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body available');
+      // 先把用户消息塞进本地
+      const userMsg: LocalMessage = { id: `user-${Date.now()}`, role: 'user', content: question };
+      setMessages(prev => {
+        const newMessages = [...prev, userMsg];
+        localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
+        return newMessages;
+      });
+      setInputValue('');
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+      // 再放一个空的 AI 消息，用于流式更新
+      const tempAI: LocalMessage = { id: `assistant-${Date.now() + 1}`, role: 'assistant', content: '', streaming: true };
+      setMessages(prev => {
+        const newMessages = [...prev, tempAI];
+        localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
+        return newMessages;
+      });
+
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          
-          // 解码新的数据块
-          const newText = decoder.decode(value, { stream: true });
-          console.log('Received chunk:', newText); // 添加调试日志
-          
-          buffer += newText;
-          let lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) {
-              console.log('Skipping non-data line:', trimmed); // 添加调试日志
-              continue;
-            }
+        const response = await fetch(`${API_BASE}/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          },
+          body: JSON.stringify({ 
+            question, 
+            stream: true, 
+            session_id: activeSessionId,
+            user_id: userId
+          }),
+          cache: 'no-store',
+          credentials: 'same-origin'
+        });
+
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('No response body available');
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
             
-            const jsonStr = trimmed.slice('data:'.length).trim();
-            if (!jsonStr) {
-              console.log('Empty JSON string'); // 添加调试日志
-              continue;
-            }
+            // 解码新的数据块
+            const newText = decoder.decode(value, { stream: true });
+            console.log('Received chunk:', newText);
             
-            try {
-              const data = JSON.parse(jsonStr);
-              console.log('Parsed data:', data); // 添加调试日志
-              
-              if (data.code === 0) {
-                if (data.data === true) continue;
-                if (data.data && typeof data.data.answer === 'string') {
-                  const answerText = data.data.answer;
-                  const referenceObj = data.data.reference || {};
-                  setMessages(prev => {
-                    const newMessages = prev.map((m, i) => {
-                      if (i === prev.length - 1 && m.streaming) {
-                        return {
-                          ...m,
-                          content: answerText,
-                          reference: referenceObj,
-                          streaming: true
-                        };
-                      }
-                      return m;
-                    });
-                    if (isClient) {
-                      localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
-                    }
-                    return newMessages;
-                  });
-                }
-              } else {
-                console.error('Stream error:', data);
-                throw new Error(data.message || '流式错误');
+            buffer += newText;
+            let lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) {
+                console.log('Skipping non-data line:', trimmed);
+                continue;
               }
-            } catch (err) {
-              console.error('解析流数据出错:', err, 'Line:', trimmed);
+              
+              const jsonStr = trimmed.slice('data:'.length).trim();
+              if (!jsonStr) {
+                console.log('Empty JSON string');
+                continue;
+              }
+              
+              try {
+                const data = JSON.parse(jsonStr);
+                console.log('Parsed data:', data);
+                
+                if (data.code === 0) {
+                  if (data.data === true) continue;
+                  if (data.data && typeof data.data.answer === 'string') {
+                    const answerText = data.data.answer;
+                    const referenceObj = data.data.reference || {};
+                    setMessages(prev => {
+                      const newMessages = prev.map((m, i) => {
+                        if (i === prev.length - 1 && m.streaming) {
+                          return {
+                            ...m,
+                            content: answerText,
+                            reference: referenceObj,
+                            streaming: true
+                          };
+                        }
+                        return m;
+                      });
+                      localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
+                      return newMessages;
+                    });
+                  }
+                } else {
+                  console.error('Stream error:', data);
+                  throw new Error(data.message || '流式错误');
+                }
+              } catch (err) {
+                console.error('解析流数据出错:', err, 'Line:', trimmed);
+              }
             }
           }
+        } catch (err) {
+          console.error('读取流数据出错:', err);
+          throw err;
+        } finally {
+          setMessages(prev => {
+            const newMessages = prev.map((m, i) => {
+              if (i === prev.length - 1 && m.streaming) {
+                return { ...m, streaming: false };
+              }
+              return m;
+            });
+            localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
+            return newMessages;
+          });
+          reader.releaseLock();
         }
       } catch (err) {
-        console.error('读取流数据出错:', err);
-        throw err;
-      } finally {
+        console.error('请求出错:', err);
         setMessages(prev => {
-          const newMessages = prev.map((m, i) => {
-            if (i === prev.length - 1 && m.streaming) {
-              return { ...m, streaming: false };
-            }
-            return m;
-          });
-          if (isClient) {
+          const newMessages = prev.filter(m => !m.streaming);
+          if (activeSessionId) {
             localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
           }
           return newMessages;
         });
-        reader.releaseLock();
       }
     } catch (err) {
       console.error('请求出错:', err);
       setMessages(prev => {
         const newMessages = prev.filter(m => !m.streaming);
-        if (isClient) {
+        if (activeSessionId) {
           localStorage.setItem(`messages_${activeSessionId}`, JSON.stringify(newMessages));
         }
         return newMessages;
@@ -513,6 +603,258 @@ const HomePage: React.FC = () => {
     setMessages(prev => prev.slice(0, idx));
     await sendMessage(userMsg.content);
   }
+
+  // TTS 播放组件
+  const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
+    const [audioUrl, setAudioUrl] = useState<string | null>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const audioRef = useRef<HTMLAudioElement>(null);
+
+    const processTTSMessage = (textData: string, ws: WebSocket, audioData: Uint8Array[]) => {
+      try {
+        const msg = JSON.parse(textData);
+        if (msg.header.code !== 0) {
+          console.error('TTS error:', msg.header);
+          return;
+        }
+        const audioBase64 = msg?.payload?.audio?.audio;
+        if (audioBase64) {
+          const raw = window.atob(audioBase64);
+          const u8arr = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) {
+            u8arr[i] = raw.charCodeAt(i);
+          }
+          audioData.push(u8arr);
+        }
+        if (msg.header.status === 2) {
+          const blob = new Blob(audioData, { type: 'audio/mpeg' });
+          const finalUrl = URL.createObjectURL(blob);
+          setAudioUrl(finalUrl);
+          ws.close();
+          // 在设置 URL 后，等待下一个渲染周期再开始播放
+          setTimeout(() => {
+            if (audioRef.current) {
+              audioRef.current.play()
+                .then(() => setIsPlaying(true))
+                .catch(err => console.error('Auto-play error:', err));
+            }
+          }, 0);
+        }
+      } catch (err) {
+        console.error('TTS message parsing error:', err, 'data:', textData);
+      }
+    };
+
+    const handlePlay = async () => {
+      if (audioUrl && audioRef.current) {
+        audioRef.current.play().catch(err => console.error('Audio play error:', err));
+        setIsPlaying(true);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const configResponse = await fetch(`${API_BASE}/tts/config`);
+        
+        if (!configResponse.ok) {
+          throw new Error(`Failed to get TTS config: ${configResponse.statusText}`);
+        }
+        
+        const config = await configResponse.json();
+        if (!config.wsUrl || !config.appId || !config.resId) {
+          throw new Error('Invalid TTS configuration received');
+        }
+
+        let retryCount = 0;
+        const maxRetries = 3;
+        const connectWebSocket = () => {
+          return new Promise((resolve, reject) => {
+            const ws = new WebSocket(config.wsUrl);
+            let audioData: Uint8Array[] = [];
+            let connectionTimeout: NodeJS.Timeout;
+
+            connectionTimeout = setTimeout(() => {
+              ws.close();
+              if (retryCount < maxRetries) {
+                retryCount++;
+                console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
+                resolve(connectWebSocket());
+              } else {
+                reject(new Error('WebSocket connection timeout after retries'));
+              }
+            }, 5000);
+            
+            ws.onopen = () => {
+              clearTimeout(connectionTimeout);
+              console.log('WebSocket connected successfully');
+              const ttsReq = buildTTSRequestPayload(text, config);
+              ws.send(JSON.stringify(ttsReq));
+            };
+            
+            ws.onmessage = (evt) => {
+              if (typeof evt.data === 'string') {
+                processTTSMessage(evt.data, ws, audioData);
+              } else if (evt.data instanceof Blob) {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  processTTSMessage(reader.result as string, ws, audioData);
+                };
+                reader.readAsText(evt.data);
+              }
+            };
+            
+            ws.onerror = (e) => {
+              console.error('TTS WebSocket error:', e);
+              clearTimeout(connectionTimeout);
+              if (retryCount < maxRetries) {
+                retryCount++;
+                console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
+                ws.close();
+                resolve(connectWebSocket());
+              } else {
+                reject(new Error('WebSocket connection failed after retries'));
+              }
+            };
+            
+            ws.onclose = () => {
+              clearTimeout(connectionTimeout);
+              setLoading(false);
+            };
+          });
+        };
+
+        await connectWebSocket();
+      } catch (err) {
+        console.error('TTS request error:', err);
+        setLoading(false);
+        alert(`语音合成失败: ${err.message}`);
+      }
+    };
+
+    const handlePause = () => {
+      if (audioRef.current) {
+        if (!audioRef.current.paused) {
+          audioRef.current.pause();
+          setIsPlaying(false);
+        } else {
+          audioRef.current.play().catch(err => console.error('Audio resume error:', err));
+          setIsPlaying(true);
+        }
+      }
+    };
+
+    return (
+      <div className="flex items-center gap-2">
+        {!audioUrl ? (
+          <button
+            onClick={handlePlay}
+            disabled={loading}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm transition-all ${
+              loading 
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+            }`}
+          >
+            {loading ? (
+              <>
+                <ArrowPathIcon className="w-4 h-4 animate-spin" />
+                <span>合成中...</span>
+              </>
+            ) : (
+              <>
+                <PlayIcon className="w-4 h-4" />
+                <span>播放</span>
+              </>
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={isPlaying ? handlePause : handlePlay}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm ${
+              isPlaying 
+                ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100' 
+                : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+            } transition-all`}
+          >
+            {isPlaying ? (
+              <>
+                <PauseIcon className="w-4 h-4" />
+                <span>暂停</span>
+              </>
+            ) : (
+              <>
+                <PlayIcon className="w-4 h-4" />
+                <span>播放</span>
+              </>
+            )}
+          </button>
+        )}
+        {audioUrl && (
+          <audio ref={audioRef} src={audioUrl} onEnded={() => setIsPlaying(false)} />
+        )}
+      </div>
+    );
+  };
+
+  // ====================== 编辑消息表单组件 ======================
+  const EditMessageForm: React.FC<{ originalContent: string; onSave: (newContent: string) => void; }> = ({ originalContent, onSave }) => {
+    const [value, setValue] = useState(originalContent);
+    
+    // This styling will override the parent container's styling
+    useEffect(() => {
+      // Find the parent div with bg-blue-400/80 class and temporarily remove color
+      const textarea = document.querySelector('.bg-blue-400\\/80');
+      if (textarea) {
+        textarea.classList.remove('bg-blue-400/80');
+        textarea.classList.remove('text-white');
+        textarea.classList.add('bg-transparent');
+        
+        return () => {
+          // Restore the original classes when component unmounts
+          textarea.classList.add('bg-blue-400/80');
+          textarea.classList.add('text-white');
+          textarea.classList.remove('bg-transparent');
+        };
+      }
+    }, []);
+    
+    return (
+      <div className="relative bg-transparent">
+        <textarea
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[100px] pr-20 bg-white"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              onSave(value);
+            }
+            if (e.key === 'Escape') {
+              onSave(originalContent);
+            }
+          }}
+          autoFocus
+        />
+        <div className="absolute bottom-2 right-2 flex gap-1">
+          <button 
+            className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
+            onClick={() => onSave(originalContent)}
+            title="取消"
+          >
+            取消
+          </button>
+          <button 
+            className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
+            onClick={() => onSave(value)}
+            title="保存"
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-[100dvh] bg-gray-50">
@@ -577,7 +919,7 @@ const HomePage: React.FC = () => {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm('确定要删除这个对话吗？')) deleteSession(session.id);
+                          deleteSession(session.id);
                         }}
                         className="p-1 text-gray-400 hover:text-red-600 rounded"
                       >
@@ -667,285 +1009,22 @@ const HomePage: React.FC = () => {
           </AnimatePresence>
         </div>
 
-        {/* 输入框区域 */}
-        <div className="border-t bg-white p-2 md:p-4 pb-safe">
-          <div className="max-w-4xl mx-auto">
-            <div className="relative">
-              <textarea
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    if (inputValue.trim()) {
-                      sendMessage(inputValue);
-                      setInputValue('');
-                    }
-                  }
-                }}
-                placeholder="输入您的问题..."
-                className="w-full px-3 py-2 pr-10 rounded-lg border focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-none text-base md:text-sm"
-                rows={2}
-              />
-              <button
-                onClick={() => {
-                  if (inputValue.trim()) {
-                    sendMessage(inputValue);
-                    setInputValue('');
-                  }
-                }}
-                className="absolute right-2 bottom-2 p-1.5 text-blue-600 hover:text-blue-700 rounded-lg hover:bg-blue-50 transition-colors"
-              >
-                <PaperAirplaneIcon className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
+        {/* 输入框 */}
+        <div className="bg-white border-t px-4 py-2 flex items-center justify-between">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            className="flex-1 p-2 border border-gray-300 rounded-lg"
+          />
+          <button
+            onClick={() => sendMessage(inputValue)}
+            className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100"
+          >
+            <PaperAirplaneIcon className="w-6 h-6" />
+          </button>
         </div>
       </div>
-    </div>
-  );
-};
-
-// ====================== 编辑消息表单组件 ======================
-const EditMessageForm: React.FC<{ originalContent: string; onSave: (newContent: string) => void; }> = ({ originalContent, onSave }) => {
-  const [value, setValue] = useState(originalContent);
-  
-  // This styling will override the parent container's styling
-  useEffect(() => {
-    // Find the parent div with bg-blue-400/80 class and temporarily remove color
-    const textarea = document.querySelector('.bg-blue-400\\/80');
-    if (textarea) {
-      textarea.classList.remove('bg-blue-400/80');
-      textarea.classList.remove('text-white');
-      textarea.classList.add('bg-transparent');
-      
-      return () => {
-        // Restore the original classes when component unmounts
-        textarea.classList.add('bg-blue-400/80');
-        textarea.classList.add('text-white');
-        textarea.classList.remove('bg-transparent');
-      };
-    }
-  }, []);
-  
-  return (
-    <div className="relative bg-transparent">
-      <textarea
-        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[100px] pr-20 bg-white"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            onSave(value);
-          }
-          if (e.key === 'Escape') {
-            onSave(originalContent);
-          }
-        }}
-        autoFocus
-      />
-      <div className="absolute bottom-2 right-2 flex gap-1">
-        <button 
-          className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
-          onClick={() => onSave(originalContent)}
-          title="取消"
-        >
-          取消
-        </button>
-        <button 
-          className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
-          onClick={() => onSave(value)}
-          title="保存"
-        >
-          保存
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// TTS 播放组件
-const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
-
-  const processTTSMessage = (textData: string, ws: WebSocket, audioData: Uint8Array[]) => {
-    try {
-      const msg = JSON.parse(textData);
-      if (msg.header.code !== 0) {
-        console.error('TTS error:', msg.header);
-        return;
-      }
-      const audioBase64 = msg?.payload?.audio?.audio;
-      if (audioBase64) {
-        const raw = window.atob(audioBase64);
-        const u8arr = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; i++) {
-          u8arr[i] = raw.charCodeAt(i);
-        }
-        audioData.push(u8arr);
-      }
-      if (msg.header.status === 2) {
-        const blob = new Blob(audioData, { type: 'audio/mpeg' });
-        const finalUrl = URL.createObjectURL(blob);
-        setAudioUrl(finalUrl);
-        ws.close();
-      }
-    } catch (err) {
-      console.error('TTS message parsing error:', err, 'data:', textData);
-    }
-  };
-
-  const handlePlay = async () => {
-    if (audioUrl && audioRef.current) {
-      audioRef.current.play().catch(err => console.error('Audio play error:', err));
-      setIsPlaying(true);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const configResponse = await fetch(`${API_BASE}/tts/config`);
-      
-      if (!configResponse.ok) {
-        throw new Error(`Failed to get TTS config: ${configResponse.statusText}`);
-      }
-      
-      const config = await configResponse.json();
-      if (!config.wsUrl || !config.appId || !config.resId) {
-        throw new Error('Invalid TTS configuration received');
-      }
-
-      let retryCount = 0;
-      const maxRetries = 3;
-      const connectWebSocket = () => {
-        return new Promise((resolve, reject) => {
-          const ws = new WebSocket(config.wsUrl);
-          let audioData: Uint8Array[] = [];
-          let connectionTimeout: NodeJS.Timeout;
-
-          connectionTimeout = setTimeout(() => {
-            ws.close();
-            if (retryCount < maxRetries) {
-              retryCount++;
-              console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
-              resolve(connectWebSocket());
-            } else {
-              reject(new Error('WebSocket connection timeout after retries'));
-            }
-          }, 5000);
-          
-          ws.onopen = () => {
-            clearTimeout(connectionTimeout);
-            console.log('WebSocket connected successfully');
-            const ttsReq = buildTTSRequestPayload(text, config);
-            ws.send(JSON.stringify(ttsReq));
-          };
-          
-          ws.onmessage = (evt) => {
-            if (typeof evt.data === 'string') {
-              processTTSMessage(evt.data, ws, audioData);
-            } else if (evt.data instanceof Blob) {
-              const reader = new FileReader();
-              reader.onload = () => {
-                processTTSMessage(reader.result as string, ws, audioData);
-              };
-              reader.readAsText(evt.data);
-            }
-          };
-          
-          ws.onerror = (e) => {
-            console.error('TTS WebSocket error:', e);
-            clearTimeout(connectionTimeout);
-            if (retryCount < maxRetries) {
-              retryCount++;
-              console.log(`Retrying WebSocket connection (${retryCount}/${maxRetries})...`);
-              ws.close();
-              resolve(connectWebSocket());
-            } else {
-              reject(new Error('WebSocket connection failed after retries'));
-            }
-          };
-          
-          ws.onclose = () => {
-            clearTimeout(connectionTimeout);
-            setLoading(false);
-          };
-        });
-      };
-
-      await connectWebSocket();
-    } catch (err) {
-      console.error('TTS request error:', err);
-      setLoading(false);
-      alert(`语音合成失败: ${err.message}`);
-    }
-  };
-
-  const handlePause = () => {
-    if (audioRef.current) {
-      if (!audioRef.current.paused) {
-        audioRef.current.pause();
-        setIsPlaying(false);
-      } else {
-        audioRef.current.play().catch(err => console.error('Audio resume error:', err));
-        setIsPlaying(true);
-      }
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      {!audioUrl ? (
-        <button
-          onClick={handlePlay}
-          disabled={loading}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm transition-all ${
-            loading 
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-              : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-          }`}
-        >
-          {loading ? (
-            <>
-              <ArrowPathIcon className="w-4 h-4 animate-spin" />
-              <span>合成中...</span>
-            </>
-          ) : (
-            <>
-              <PlayIcon className="w-4 h-4" />
-              <span>播放</span>
-            </>
-          )}
-        </button>
-      ) : (
-        <button
-          onClick={isPlaying ? handlePause : handlePlay}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm ${
-            isPlaying 
-              ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100' 
-              : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
-          } transition-all`}
-        >
-          {isPlaying ? (
-            <>
-              <PauseIcon className="w-4 h-4" />
-              <span>暂停</span>
-            </>
-          ) : (
-            <>
-              <PlayIcon className="w-4 h-4" />
-              <span>播放</span>
-            </>
-          )}
-        </button>
-      )}
-      {audioUrl && (
-        <audio ref={audioRef} src={audioUrl} onEnded={() => setIsPlaying(false)} />
-      )}
     </div>
   );
 };
