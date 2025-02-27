@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
       throw new Error('TUNNEL_ENDPOINT not set');
     }
 
-    // 发送请求到隧道域名
-    const response = await fetch(`${tunnelUrl}/api/chat`, {
+    // 发送请求到隧道域名，保持原始路径
+    const response = await fetch(`${tunnelUrl}/api/v1/chats/${process.env.API_CHAT_ID}/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
