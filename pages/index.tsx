@@ -186,7 +186,7 @@ const HomePage: React.FC = () => {
     }
   }, [userId]);
 
-  // 当会话列表加载完成后，尝试（仅在没有选中会话时）恢复上次选中的会话
+  // 当会话列表加载完成后，尝试恢复上次选中的会话
   useEffect(() => {
     if (!selectedSessionId && isClient && sessions.length > 0) {
       const lastSessionId = localStorage.getItem('lastSelectedSessionId');
@@ -194,8 +194,22 @@ const HomePage: React.FC = () => {
         const session = sessions.find(s => s.id === lastSessionId);
         if (session) {
           handleSelectSession(session);
+        } else if (sessions.length > 0) {
+          // 如果找不到上次的会话，选择最新的一个会话
+          handleSelectSession(sessions[0]);
         }
+      } else if (sessions.length > 0) {
+        // 如果没有上次选中的会话记录，选择最新的一个会话
+        handleSelectSession(sessions[0]);
       }
+    } else if (!selectedSessionId && sessions.length === 0) {
+      // 如果没有任何会话，显示欢迎消息
+      setMessages([{
+        id: `assistant-welcome-${Date.now()}`,
+        role: 'assistant',
+        content: '你好！我是陈主任，有什么可以帮到你的吗？',
+        noTTS: true
+      }]);
     }
   }, [sessions, selectedSessionId]);
 
@@ -227,7 +241,7 @@ const HomePage: React.FC = () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          name: '新对话',
+          name: firstUserQuestion ? firstUserQuestion.slice(0, 20) + (firstUserQuestion.length > 20 ? '...' : '') : '新对话',
           user_id: userId
         })
       });
@@ -238,29 +252,25 @@ const HomePage: React.FC = () => {
         // 设置会话ID并清空消息
         setSelectedSessionId(sessionId);
         
-        // 添加欢迎词消息
-        const welcomeMsg: LocalMessage = {
-          id: `assistant-welcome-${Date.now()}`,
-          role: 'assistant',
-          content: '你好！我是陈主任，有什么可以帮到你的吗？',
-          noTTS: true, // 不显示TTS按钮
-        };
-        setMessages([welcomeMsg]);
+        // 如果是第一次创建会话，不需要再显示欢迎消息
+        if (firstUserQuestion.trim()) {
+          setMessages([]); // 清空之前的欢迎消息
+        } else {
+          // 如果是点击"新建对话"按钮创建的，显示欢迎消息
+          const welcomeMsg: LocalMessage = {
+            id: `assistant-welcome-${Date.now()}`,
+            role: 'assistant',
+            content: '你好！我是陈主任，有什么可以帮到你的吗？',
+            noTTS: true,
+          };
+          setMessages([welcomeMsg]);
+        }
         
         // 立即刷新会话列表
         await fetchSessions();
 
         // 如果有初始问题，就发送
         if (firstUserQuestion.trim()) {
-          // 更新会话名称
-          const newName = firstUserQuestion.trim().slice(0, 20) 
-            + (firstUserQuestion.trim().length > 20 ? '...' : '');
-          await updateSessionName(sessionId, newName);
-          setSessions(prev =>
-            prev.map(s => (s.id === sessionId ? { ...s, name: newName } : s))
-          );
-
-          // 发送第一条消息
           await sendMessage(firstUserQuestion, sessionId);
         }
       } else {
@@ -505,7 +515,7 @@ const HomePage: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-[100dvh] bg-gray-50">
       {/* 侧边栏 */}
       <AnimatePresence>
         {isSidebarOpen && (
@@ -513,7 +523,7 @@ const HomePage: React.FC = () => {
             initial={{ x: -300 }}
             animate={{ x: 0 }}
             exit={{ x: -300 }}
-            className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-lg"
+            className="fixed inset-y-0 left-0 z-50 w-[80vw] md:w-72 bg-white shadow-lg"
           >
             <div className="flex items-center justify-between p-4 border-b">
               <h2 className="text-xl font-semibold text-gray-800">对话列表</h2>
@@ -583,9 +593,9 @@ const HomePage: React.FC = () => {
       </AnimatePresence>
 
       {/* 主内容区 */}
-      <div className="flex-1 flex flex-col h-screen">
+      <div className="flex-1 flex flex-col h-[100dvh] w-full">
         {/* 顶部导航栏 */}
-        <div className="bg-white border-b px-4 py-3 flex items-center justify-between">
+        <div className="bg-white border-b px-4 py-2 flex items-center justify-between">
           <button
             onClick={() => setIsSidebarOpen(true)}
             className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
@@ -597,7 +607,7 @@ const HomePage: React.FC = () => {
         </div>
 
         {/* 消息列表 */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
+        <div className="flex-1 overflow-y-auto px-2 md:px-4 py-4 space-y-4 pb-safe">
           <AnimatePresence>
             {messages.map((message) => (
               <motion.div
@@ -658,7 +668,7 @@ const HomePage: React.FC = () => {
         </div>
 
         {/* 输入框区域 */}
-        <div className="border-t bg-white p-4">
+        <div className="border-t bg-white p-2 md:p-4 pb-safe">
           <div className="max-w-4xl mx-auto">
             <div className="relative">
               <textarea
@@ -674,8 +684,8 @@ const HomePage: React.FC = () => {
                   }
                 }}
                 placeholder="输入您的问题..."
-                className="w-full px-4 py-3 pr-12 rounded-lg border focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-none"
-                rows={3}
+                className="w-full px-3 py-2 pr-10 rounded-lg border focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-none text-base md:text-sm"
+                rows={2}
               />
               <button
                 onClick={() => {
@@ -684,9 +694,9 @@ const HomePage: React.FC = () => {
                     setInputValue('');
                   }
                 }}
-                className="absolute right-2 bottom-3 p-2 text-blue-600 hover:text-blue-700 rounded-lg hover:bg-blue-50 transition-colors"
+                className="absolute right-2 bottom-2 p-1.5 text-blue-600 hover:text-blue-700 rounded-lg hover:bg-blue-50 transition-colors"
               >
-                <PaperAirplaneIcon className="w-6 h-6" />
+                <PaperAirplaneIcon className="w-5 h-5" />
               </button>
             </div>
           </div>

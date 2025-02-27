@@ -5,6 +5,14 @@
 @layer base {
   body {
     @apply bg-gray-50;
+    height: 100dvh;
+    overflow: hidden;
+  }
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }
 
