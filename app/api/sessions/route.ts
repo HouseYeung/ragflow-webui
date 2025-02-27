@@ -27,6 +27,15 @@ async function handleRequest(req: NextRequest, method: string) {
     if (method === 'GET') {
       const { searchParams } = new URL(req.url);
       url = buildApiUrl(tunnelUrl, '/sessions', searchParams);
+    } else if (method === 'PUT') {
+      // PUT 请求需要特殊处理，使用 PATCH 方法
+      const data = await req.json();
+      url = buildApiUrl(tunnelUrl, `/sessions/${data.id}`);
+      body = JSON.stringify({
+        name: data.name,
+        user_id: data.user_id
+      });
+      method = 'PATCH'; // 改用 PATCH 方法
     } else {
       url = buildApiUrl(tunnelUrl, '/sessions');
       if (method !== 'GET') {
@@ -82,6 +91,10 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   return handleRequest(req, 'PUT');
+}
+
+export async function PATCH(req: NextRequest) {
+  return handleRequest(req, 'PATCH');
 }
 
 export async function DELETE(req: NextRequest) {
