@@ -3,9 +3,31 @@ import {
   PlusIcon,
   PencilIcon,
   TrashIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  Bars3Icon,
+  XMarkIcon,
+  PaperAirplaneIcon,
+  ChatBubbleLeftIcon,
+  PlayIcon,
+  PauseIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import FullAnswerDisplay from '../components/FullAnswerDisplay';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// ====================== 用户ID管理 ======================
+
+function getUserId() {
+  if (typeof window === 'undefined') return '';
+  
+  let userId = localStorage.getItem('user_id');
+  if (!userId) {
+    // 生成一个随机的用户ID
+    userId = 'user_' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('user_id', userId);
+  }
+  return userId;
+}
 
 // ====================== TTS 配置及辅助函数 ======================
 
@@ -135,6 +157,7 @@ interface LocalMessage {
   streaming?: boolean;
   edited?: boolean;
   reference?: ReferenceType;
+  noTTS?: boolean;
 }
 
 const isClient = typeof window !== 'undefined';
@@ -146,14 +169,39 @@ const HomePage: React.FC = () => {
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [userId] = useState<string>(() => getUserId());
 
+  // 保存选中的会话ID到localStorage
   useEffect(() => {
-    fetchSessions();
-  }, []);
+    if (selectedSessionId && isClient) {
+      localStorage.setItem('lastSelectedSessionId', selectedSessionId);
+    }
+  }, [selectedSessionId]);
+
+  // 初始化时加载会话列表
+  useEffect(() => {
+    if (userId) {
+      fetchSessions();
+    }
+  }, [userId]);
+
+  // 当会话列表加载完成后，尝试（仅在没有选中会话时）恢复上次选中的会话
+  useEffect(() => {
+    if (!selectedSessionId && isClient && sessions.length > 0) {
+      const lastSessionId = localStorage.getItem('lastSelectedSessionId');
+      if (lastSessionId) {
+        const session = sessions.find(s => s.id === lastSessionId);
+        if (session) {
+          handleSelectSession(session);
+        }
+      }
+    }
+  }, [sessions, selectedSessionId]);
 
   async function fetchSessions() {
     try {
-      const res = await fetch(`${API_BASE}/sessions`, {
+      const res = await fetch(`${API_BASE}/sessions?user_id=${userId}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json'
@@ -178,35 +226,48 @@ const HomePage: React.FC = () => {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ name: '新对话' })
+        body: JSON.stringify({ 
+          name: '新对话',
+          user_id: userId
+        })
       });
       const json = await res.json();
       if (json.code === 0) {
         const sessionId = json.data.id;
+        
+        // 设置会话ID并清空消息
         setSelectedSessionId(sessionId);
+        
+        // 添加欢迎词消息
+        const welcomeMsg: LocalMessage = {
+          id: `assistant-welcome-${Date.now()}`,
+          role: 'assistant',
+          content: '你好！我是陈主任，有什么可以帮到你的吗？',
+          noTTS: true, // 不显示TTS按钮
+        };
+        setMessages([welcomeMsg]);
+        
+        // 立即刷新会话列表
+        await fetchSessions();
 
-        const serverMsgs = json.data.messages || [];
-        const localMsgs = serverMsgs.map((m: any, i: number) => ({
-          id: `${sessionId}-${i}`,
-          role: m.role,
-          content: m.content
-        }));
-        setMessages(localMsgs);
-
+        // 如果有初始问题，就发送
         if (firstUserQuestion.trim()) {
-          await sendMessage(firstUserQuestion, sessionId);
-          const newName = firstUserQuestion.trim().slice(0, 20) + (firstUserQuestion.trim().length > 20 ? '...' : '');
+          // 更新会话名称
+          const newName = firstUserQuestion.trim().slice(0, 20) 
+            + (firstUserQuestion.trim().length > 20 ? '...' : '');
           await updateSessionName(sessionId, newName);
           setSessions(prev =>
             prev.map(s => (s.id === sessionId ? { ...s, name: newName } : s))
           );
+
+          // 发送第一条消息
+          await sendMessage(firstUserQuestion, sessionId);
         }
-        await fetchSessions();
       } else {
         console.error('createSession failed:', json);
       }
-    } catch (err) {
-      console.error('createSession error:', err);
+    } catch (error) {
+      console.error('创建会话失败:', error);
     }
   }
 
@@ -236,7 +297,10 @@ const HomePage: React.FC = () => {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ ids: [sessionId] })
+        body: JSON.stringify({ 
+          ids: [sessionId],
+          user_id: userId
+        })
       });
       const json = await res.json();
       if (json.code === 0) {
@@ -260,7 +324,11 @@ const HomePage: React.FC = () => {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ id: sessionId, name: newName })
+        body: JSON.stringify({ 
+          id: sessionId, 
+          name: newName,
+          user_id: userId
+        })
       });
       const json = await res.json();
       if (json.code !== 0) {
@@ -272,17 +340,17 @@ const HomePage: React.FC = () => {
   }
 
   async function sendMessage(question: string, sessionId?: string) {
-    if (!sessionId && !selectedSessionId) {
+    const activeSessionId = sessionId || selectedSessionId;
+    if (!activeSessionId) {
       await createSession(question);
       return;
     }
-    const activeSessionId = sessionId || selectedSessionId;
-    if (!activeSessionId) return;
     if (!question.trim()) {
       alert('问题不能为空');
       return;
     }
 
+    // 如果是新对话，还叫"新对话"，则用用户输入更新一下标题
     const currentSession = sessions.find(s => s.id === activeSessionId);
     if (currentSession && currentSession.name === '新对话') {
       const newName = question.trim().slice(0, 20) + (question.trim().length > 20 ? '...' : '');
@@ -292,10 +360,12 @@ const HomePage: React.FC = () => {
       );
     }
 
+    // 先把用户消息塞进本地
     const userMsg: LocalMessage = { id: `user-${Date.now()}`, role: 'user', content: question };
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
 
+    // 再放一个空的 AI 消息，用于流式更新
     const tempAI: LocalMessage = { id: `assistant-${Date.now() + 1}`, role: 'assistant', content: '', streaming: true };
     setMessages(prev => [...prev, tempAI]);
 
@@ -308,7 +378,14 @@ const HomePage: React.FC = () => {
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive'
         },
-        body: JSON.stringify({ question, stream: true, session_id: activeSessionId })
+        body: JSON.stringify({ 
+          question, 
+          stream: true, 
+          session_id: activeSessionId,
+          user_id: userId
+        }),
+        cache: 'no-store',
+        credentials: 'same-origin'
       });
 
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -321,16 +398,32 @@ const HomePage: React.FC = () => {
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          
+          // 解码新的数据块
+          const newText = decoder.decode(value, { stream: true });
+          console.log('Received chunk:', newText); // 添加调试日志
+          
+          buffer += newText;
           let lines = buffer.split('\n');
           buffer = lines.pop() || '';
+          
           for (const line of lines) {
             const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const jsonStr = trimmed.slice('data:'.length);
-            if (!jsonStr) continue;
+            if (!trimmed.startsWith('data:')) {
+              console.log('Skipping non-data line:', trimmed); // 添加调试日志
+              continue;
+            }
+            
+            const jsonStr = trimmed.slice('data:'.length).trim();
+            if (!jsonStr) {
+              console.log('Empty JSON string'); // 添加调试日志
+              continue;
+            }
+            
             try {
               const data = JSON.parse(jsonStr);
+              console.log('Parsed data:', data); // 添加调试日志
+              
               if (data.code === 0) {
                 if (data.data === true) continue;
                 if (data.data && typeof data.data.answer === 'string') {
@@ -339,7 +432,12 @@ const HomePage: React.FC = () => {
                   setMessages(prev => {
                     const newMessages = prev.map((m, i) => {
                       if (i === prev.length - 1 && m.streaming) {
-                        return { ...m, content: answerText, reference: referenceObj, streaming: true };
+                        return {
+                          ...m,
+                          content: answerText,
+                          reference: referenceObj,
+                          streaming: true
+                        };
                       }
                       return m;
                     });
@@ -354,9 +452,7 @@ const HomePage: React.FC = () => {
                 throw new Error(data.message || '流式错误');
               }
             } catch (err) {
-              if (trimmed !== '') {
-                console.error('解析流数据出错:', err, 'Line:', trimmed);
-              }
+              console.error('解析流数据出错:', err, 'Line:', trimmed);
             }
           }
         }
@@ -366,7 +462,9 @@ const HomePage: React.FC = () => {
       } finally {
         setMessages(prev => {
           const newMessages = prev.map((m, i) => {
-            if (i === prev.length - 1 && m.streaming) return { ...m, streaming: false };
+            if (i === prev.length - 1 && m.streaming) {
+              return { ...m, streaming: false };
+            }
             return m;
           });
           if (isClient) {
@@ -401,93 +499,196 @@ const HomePage: React.FC = () => {
     if (idx === -1) return;
     const userMsg = messages[idx];
     if (userMsg.role !== 'user') return;
+    // 将消息列表截断至这条用户消息之前，重新请求
     setMessages(prev => prev.slice(0, idx));
     await sendMessage(userMsg.content);
   }
 
   return (
     <div className="flex h-screen bg-gray-50">
-      {/* 左侧会话列表 */}
-      <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
-        <div className="p-4 border-b border-gray-200">
-          <button
-            className="btn btn-primary w-full flex items-center justify-center space-x-2"
-            onClick={async () => { setSelectedSessionId(''); setMessages([]); await createSession(''); }}
+      {/* 侧边栏 */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div
+            initial={{ x: -300 }}
+            animate={{ x: 0 }}
+            exit={{ x: -300 }}
+            className="fixed inset-y-0 left-0 z-50 w-72 bg-white shadow-lg"
           >
-            <PlusIcon className="w-5 h-5" />
-            <span>新对话</span>
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {sessions.map(s => (
-            <div
-              key={s.id}
-              className={`p-3 rounded-lg transition-colors duration-200 cursor-pointer ${s.id === selectedSessionId ? 'bg-blue-100 border-blue-300' : 'hover:bg-gray-100'}`}
-              onClick={() => handleSelectSession(s)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="font-medium truncate flex-1">{s.name}</div>
-                <button className="p-1 hover:bg-gray-200 rounded" onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}>
-                  <TrashIcon className="w-4 h-4" />
-                </button>
-              </div>
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-xl font-semibold text-gray-800">对话列表</h2>
+              <button
+                onClick={() => setIsSidebarOpen(false)}
+                className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
             </div>
-          ))}
-        </div>
-      </div>
-      {/* 右侧对话窗口 */}
-      <div className="flex-1 flex flex-col bg-white">
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map(msg => (
-            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] rounded-lg p-4 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800'} relative group`}>
-                {msg.role === 'user' && (
-                  <div className="absolute -top-8 right-0 flex space-x-1 bg-white rounded-md shadow p-1">
-                    <button className="p-1 hover:bg-gray-100 rounded text-gray-600" onClick={() => handleEditMessage(msg.id)}>
-                      <PencilIcon className="w-4 h-4" />
-                    </button>
-                    {msg.edited && (
-                      <button className="p-1 hover:bg-gray-100 rounded text-gray-600" onClick={() => handleRefreshFrom(msg.id)}>
-                        <ArrowPathIcon className="w-4 h-4" />
+            <div className="p-4">
+              <button
+                onClick={() => createSession('')}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <PlusIcon className="w-5 h-5" />
+                新建对话
+              </button>
+            </div>
+            <div className="overflow-y-auto h-[calc(100vh-8rem)]">
+              {sessions.map((session) => (
+                <motion.div
+                  key={session.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`p-3 mx-2 mb-2 rounded-lg cursor-pointer transition-all ${
+                    selectedSessionId === session.id
+                      ? 'bg-blue-50 border-blue-200'
+                      : 'hover:bg-gray-50'
+                  }`}
+                  onClick={() => handleSelectSession(session)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <ChatBubbleLeftIcon className="w-5 h-5 text-gray-500" />
+                      <span className="text-sm font-medium text-gray-700 truncate max-w-[160px]">
+                        {session.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newName = prompt('请输入新的对话名称', session.name);
+                          if (newName) updateSessionName(session.id, newName);
+                        }}
+                        className="p-1 text-gray-400 hover:text-gray-600 rounded"
+                      >
+                        <PencilIcon className="w-4 h-4" />
                       </button>
-                    )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm('确定要删除这个对话吗？')) deleteSession(session.id);
+                        }}
+                        className="p-1 text-gray-400 hover:text-red-600 rounded"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
-                )}
-                {!msg.editing ? (
-                  <div>
-                    {msg.role === 'assistant' ? (
-                      <div>
-                        <FullAnswerDisplay response={{ code: 0, data: { answer: msg.content, reference: msg.reference || { chunks: [] } } }} />
-                        <TTSAudioPlayer text={msg.content} />
-                      </div>
-                    ) : (
-                      <div className="whitespace-pre-wrap">{msg.content}</div>
-                    )}
-                  </div>
-                ) : (
-                  <EditMessageForm
-                    originalContent={msg.content}
-                    onSave={(newContent: string) => handleSaveEditedMessage(msg.id, newContent)}
-                  />
-                )}
-              </div>
+                </motion.div>
+              ))}
             </div>
-          ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 主内容区 */}
+      <div className="flex-1 flex flex-col h-screen">
+        {/* 顶部导航栏 */}
+        <div className="bg-white border-b px-4 py-3 flex items-center justify-between">
+          <button
+            onClick={() => setIsSidebarOpen(true)}
+            className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            <Bars3Icon className="w-6 h-6" />
+          </button>
+          <h1 className="text-xl font-semibold text-gray-800">IBD助手</h1>
+          <div className="w-10"></div>
         </div>
-        {/* 底部输入框 */}
-        <div className="border-t border-gray-200 p-4">
-          <div className="max-w-4xl mx-auto flex space-x-2">
-            <textarea
-              className="flex-1 border border-gray-300 rounded p-2"
-              rows={3}
-              placeholder="请输入你的问题..."
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(inputValue); } }}
-            />
-            <button className="bg-blue-600 text-white px-4 py-2 rounded" onClick={() => sendMessage(inputValue)}>
-              发送
-            </button>
+
+        {/* 消息列表 */}
+        <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
+          <AnimatePresence>
+            {messages.map((message) => (
+              <motion.div
+                key={message.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className={`flex flex-col ${
+                  message.role === 'assistant' ? 'items-start' : 'items-end'
+                }`}
+              >
+                <div
+                  className={`max-w-3xl rounded-lg px-2 py-1 ${
+                    message.role === 'assistant'
+                      ? 'bg-white shadow-sm'
+                      : 'bg-blue-400/80 text-white'
+                  }`}
+                >
+                  {message.editing ? (
+                    <EditMessageForm
+                      originalContent={message.content}
+                      onSave={(newContent) => handleSaveEditedMessage(message.id, newContent)}
+                    />
+                  ) : (
+                    <div className="prose max-w-none">
+                      <FullAnswerDisplay response={{ code: 0, data: { answer: message.content, reference: message.reference || { chunks: [] } } }} />
+                    </div>
+                  )}
+                </div>
+                {message.role === 'user' && !message.editing && (
+                  <div className="flex flex-row gap-2 mt-1 px-1">
+                    <button
+                      onClick={() => handleEditMessage(message.id)}
+                      className="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-xs transition-colors"
+                      title="编辑消息"
+                    >
+                      <PencilIcon className="w-3 h-3" />
+                      <span>编辑</span>
+                    </button>
+                    <button
+                      onClick={() => handleRefreshFrom(message.id)}
+                      className="text-gray-400 hover:text-gray-600 flex items-center gap-1 text-xs transition-colors"
+                      title="重新提问"
+                    >
+                      <ArrowPathIcon className="w-3 h-3" />
+                      <span>重新提问</span>
+                    </button>
+                  </div>
+                )}
+                {message.role === 'assistant' && !message.noTTS && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <TTSAudioPlayer text={message.content} />
+                  </div>
+                )}
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+
+        {/* 输入框区域 */}
+        <div className="border-t bg-white p-4">
+          <div className="max-w-4xl mx-auto">
+            <div className="relative">
+              <textarea
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (inputValue.trim()) {
+                      sendMessage(inputValue);
+                      setInputValue('');
+                    }
+                  }
+                }}
+                placeholder="输入您的问题..."
+                className="w-full px-4 py-3 pr-12 rounded-lg border focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-none"
+                rows={3}
+              />
+              <button
+                onClick={() => {
+                  if (inputValue.trim()) {
+                    sendMessage(inputValue);
+                    setInputValue('');
+                  }
+                }}
+                className="absolute right-2 bottom-3 p-2 text-blue-600 hover:text-blue-700 rounded-lg hover:bg-blue-50 transition-colors"
+              >
+                <PaperAirplaneIcon className="w-6 h-6" />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -495,23 +696,60 @@ const HomePage: React.FC = () => {
   );
 };
 
-// 编辑消息表单组件
+// ====================== 编辑消息表单组件 ======================
 const EditMessageForm: React.FC<{ originalContent: string; onSave: (newContent: string) => void; }> = ({ originalContent, onSave }) => {
   const [value, setValue] = useState(originalContent);
+  
+  // This styling will override the parent container's styling
+  useEffect(() => {
+    // Find the parent div with bg-blue-400/80 class and temporarily remove color
+    const textarea = document.querySelector('.bg-blue-400\\/80');
+    if (textarea) {
+      textarea.classList.remove('bg-blue-400/80');
+      textarea.classList.remove('text-white');
+      textarea.classList.add('bg-transparent');
+      
+      return () => {
+        // Restore the original classes when component unmounts
+        textarea.classList.add('bg-blue-400/80');
+        textarea.classList.add('text-white');
+        textarea.classList.remove('bg-transparent');
+      };
+    }
+  }, []);
+  
   return (
-    <div className="flex flex-col space-y-2">
+    <div className="relative bg-transparent">
       <textarea
-        className="border border-gray-300 rounded p-2 min-h-[100px] text-gray-800 bg-white"
+        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[100px] pr-20 bg-white"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSave(value); }
-          if (e.key === 'Escape') { onSave(originalContent); }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onSave(value);
+          }
+          if (e.key === 'Escape') {
+            onSave(originalContent);
+          }
         }}
+        autoFocus
       />
-      <div className="flex space-x-2">
-        <button className="bg-blue-600 text-white px-3 py-1 rounded" onClick={() => onSave(value)}>保存</button>
-        <button className="bg-gray-300 text-gray-700 px-3 py-1 rounded" onClick={() => onSave(originalContent)}>取消</button>
+      <div className="absolute bottom-2 right-2 flex gap-1">
+        <button 
+          className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
+          onClick={() => onSave(originalContent)}
+          title="取消"
+        >
+          取消
+        </button>
+        <button 
+          className="p-1.5 text-xs text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 transition-colors bg-white"
+          onClick={() => onSave(value)}
+          title="保存"
+        >
+          保存
+        </button>
       </div>
     </div>
   );
@@ -519,10 +757,10 @@ const EditMessageForm: React.FC<{ originalContent: string; onSave: (newContent: 
 
 // TTS 播放组件
 const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
-  const [loading, setLoading] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string>('');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
   const processTTSMessage = (textData: string, ws: WebSocket, audioData: Uint8Array[]) => {
     try {
@@ -544,10 +782,6 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
         const blob = new Blob(audioData, { type: 'audio/mpeg' });
         const finalUrl = URL.createObjectURL(blob);
         setAudioUrl(finalUrl);
-        audioRef.current = new Audio(finalUrl);
-        audioRef.current.addEventListener('ended', () => setIsPlaying(false));
-        audioRef.current.play().catch(err => console.error('Audio play error:', err));
-        setIsPlaying(true);
         ws.close();
       }
     } catch (err) {
@@ -556,25 +790,15 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
   };
 
   const handlePlay = async () => {
-    if (audioUrl) {
-      if (!audioRef.current) {
-        audioRef.current = new Audio(audioUrl);
-        audioRef.current.addEventListener('ended', () => setIsPlaying(false));
-      }
+    if (audioUrl && audioRef.current) {
       audioRef.current.play().catch(err => console.error('Audio play error:', err));
       setIsPlaying(true);
       return;
     }
+
     setLoading(true);
     try {
-      // 从后端获取TTS配置
-      const configResponse = await fetch(`${API_BASE}/tts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ text })
-      });
+      const configResponse = await fetch(`${API_BASE}/tts/config`);
       
       if (!configResponse.ok) {
         throw new Error(`Failed to get TTS config: ${configResponse.statusText}`);
@@ -593,7 +817,6 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
           let audioData: Uint8Array[] = [];
           let connectionTimeout: NodeJS.Timeout;
 
-          // 设置连接超时
           connectionTimeout = setTimeout(() => {
             ws.close();
             if (retryCount < maxRetries) {
@@ -648,7 +871,6 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
     } catch (err) {
       console.error('TTS request error:', err);
       setLoading(false);
-      // 显示错误提示
       alert(`语音合成失败: ${err.message}`);
     }
   };
@@ -666,25 +888,56 @@ const TTSAudioPlayer: React.FC<{ text: string }> = ({ text }) => {
   };
 
   return (
-    <div className="mt-2 flex space-x-2">
+    <div className="flex items-center gap-2">
       {!audioUrl ? (
         <button
           onClick={handlePlay}
-          className="px-3 py-1 bg-green-500 text-white rounded"
           disabled={loading}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm transition-all ${
+            loading 
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+              : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+          }`}
         >
-          {loading ? '合成中...' : '播放语音'}
+          {loading ? (
+            <>
+              <ArrowPathIcon className="w-4 h-4 animate-spin" />
+              <span>合成中...</span>
+            </>
+          ) : (
+            <>
+              <PlayIcon className="w-4 h-4" />
+              <span>播放</span>
+            </>
+          )}
         </button>
       ) : (
         <button
           onClick={isPlaying ? handlePause : handlePlay}
-          className={`px-3 py-1 ${isPlaying ? 'bg-yellow-500' : 'bg-green-500'} text-white rounded`}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm ${
+            isPlaying 
+              ? 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100' 
+              : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+          } transition-all`}
         >
-          {isPlaying ? '暂停' : '播放'}
+          {isPlaying ? (
+            <>
+              <PauseIcon className="w-4 h-4" />
+              <span>暂停</span>
+            </>
+          ) : (
+            <>
+              <PlayIcon className="w-4 h-4" />
+              <span>播放</span>
+            </>
+          )}
         </button>
+      )}
+      {audioUrl && (
+        <audio ref={audioRef} src={audioUrl} onEnded={() => setIsPlaying(false)} />
       )}
     </div>
   );
 };
 
-export default HomePage; 
+export default HomePage;

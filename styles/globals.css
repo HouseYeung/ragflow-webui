@@ -22,3 +22,42 @@
     @apply w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50;
   }
 } 
+
+/* 自定义 prose 样式 */
+.prose {
+  /* 调整段落间距 */
+  & p {
+    margin-top: 0.25em;
+    margin-bottom: 0.25em;
+  }
+  
+  /* 调整列表间距 */
+  & ul, & ol {
+    margin-top: 0.25em;
+    margin-bottom: 0.25em;
+  }
+  
+  /* 调整列表项间距 */
+  & li {
+    margin-top: 0.25em;
+    margin-bottom: 0.25em;
+  }
+  
+  /* 调整列表项前的空间 */
+  & ul > li {
+    padding-left: 0em;
+  }
+  
+  & ol > li {
+    padding-left: 0em;
+  }
+  
+  /* 调整列表项标记的位置 */
+  & ul > li::before {
+    left: 0;
+  }
+  
+  & ol > li::before {
+    left: 0;
+  }
+} 

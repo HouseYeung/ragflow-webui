@@ -17,14 +17,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // 处理不同的HTTP方法
     switch (method) {
       case 'GET':
-        url += '?page=1&page_size=30';
+        url += `?page=1&page_size=30&user_id=${query.user_id || ''}`;
         break;
       case 'POST':
-        options.body = JSON.stringify(body);
+        options.body = JSON.stringify({
+          ...body,
+          user_id: body.user_id || query.user_id
+        });
         break;
       case 'PUT':
-        const { id, ...updateData } = body;
-        url += `/${id}`;
+        const { id, user_id, ...updateData } = body;
+        url += `/${id}?user_id=${user_id || query.user_id || ''}`;
         options.body = JSON.stringify(updateData);
         break;
       case 'DELETE':
