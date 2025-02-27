@@ -1,8 +1,6 @@
 import { NextRequest } from 'next/server';
 
-export const config = {
-  runtime: 'edge', // 使用 Edge Runtime 以支持流式响应
-};
+export const runtime = 'edge';
 
 export async function POST(req: NextRequest) {
   try {
