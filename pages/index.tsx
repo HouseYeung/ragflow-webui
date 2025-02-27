@@ -859,80 +859,71 @@ const HomePage: React.FC = () => {
   return (
     <div className="flex h-[100dvh] bg-gray-50">
       {/* 侧边栏 */}
-      <AnimatePresence>
-        {isSidebarOpen && (
-          <motion.div
-            initial={{ x: -300 }}
-            animate={{ x: 0 }}
-            exit={{ x: -300 }}
-            className="fixed inset-y-0 left-0 z-50 w-[80vw] md:w-72 bg-white shadow-lg"
-          >
-            <div className="flex items-center justify-between p-4 border-b">
-              <h2 className="text-xl font-semibold text-gray-800">对话列表</h2>
-              <button
-                onClick={() => setIsSidebarOpen(false)}
-                className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+      {isSidebarOpen && (
+        <div className="fixed inset-y-0 left-0 z-50 w-[80vw] md:w-72 bg-white shadow-lg">
+          <div className="flex items-center justify-between p-4 border-b">
+            <h2 className="text-xl font-semibold text-gray-800">对话列表</h2>
+            <button
+              onClick={() => setIsSidebarOpen(false)}
+              className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+          </div>
+          <div className="p-4">
+            <button
+              onClick={() => createSession('')}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <PlusIcon className="w-5 h-5" />
+              新建对话
+            </button>
+          </div>
+          <div className="overflow-y-auto h-[calc(100vh-8rem)]">
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className={`p-3 mx-2 mb-2 rounded-lg cursor-pointer transition-all ${
+                  selectedSessionId === session.id
+                    ? 'bg-blue-50 border-blue-200'
+                    : 'hover:bg-gray-50'
+                }`}
+                onClick={() => handleSelectSession(session)}
               >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="p-4">
-              <button
-                onClick={() => createSession('')}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                <PlusIcon className="w-5 h-5" />
-                新建对话
-              </button>
-            </div>
-            <div className="overflow-y-auto h-[calc(100vh-8rem)]">
-              {sessions.map((session) => (
-                <motion.div
-                  key={session.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`p-3 mx-2 mb-2 rounded-lg cursor-pointer transition-all ${
-                    selectedSessionId === session.id
-                      ? 'bg-blue-50 border-blue-200'
-                      : 'hover:bg-gray-50'
-                  }`}
-                  onClick={() => handleSelectSession(session)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <ChatBubbleLeftIcon className="w-5 h-5 text-gray-500" />
-                      <span className="text-sm font-medium text-gray-700 truncate max-w-[160px]">
-                        {session.name}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const newName = prompt('请输入新的对话名称', session.name);
-                          if (newName) updateSessionName(session.id, newName);
-                        }}
-                        className="p-1 text-gray-400 hover:text-gray-600 rounded"
-                      >
-                        <PencilIcon className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteSession(session.id);
-                        }}
-                        className="p-1 text-gray-400 hover:text-red-600 rounded"
-                      >
-                        <TrashIcon className="w-4 h-4" />
-                      </button>
-                    </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ChatBubbleLeftIcon className="w-5 h-5 text-gray-500" />
+                    <span className="text-sm font-medium text-gray-700 truncate max-w-[160px]">
+                      {session.name}
+                    </span>
                   </div>
-                </motion.div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const newName = prompt('请输入新的对话名称', session.name);
+                        if (newName) updateSessionName(session.id, newName);
+                      }}
+                      className="p-1 text-gray-400 hover:text-gray-600 rounded"
+                    >
+                      <PencilIcon className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSession(session.id);
+                      }}
+                      className="p-1 text-gray-400 hover:text-red-600 rounded"
+                    >
+                      <TrashIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 主内容区 */}
       <div className="flex-1 flex flex-col h-[100dvh] w-full">
