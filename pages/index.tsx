@@ -103,7 +103,7 @@ function buildTTSRequestPayload(text: string, config: any) {
         vcn: 'x5_clone',
         LanguageID: 0,
         volume: 50,
-        speed: 50,
+        speed: 30,
         pitch: 50,
         bgs: 0,
         reg: 0,
